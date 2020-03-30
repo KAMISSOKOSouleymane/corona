@@ -4,12 +4,13 @@ import yaml
 
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt 
 
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
 from dash.dependencies import Input, Output
-
+from scipy.integrate import solve_ivp
 
 # Lecture du fichier d'environnement
 ENV_FILE = '../env.yaml'
@@ -26,7 +27,7 @@ DATA_FILE = os.path.join(ROOT_DIR,
 epidemie_df = (pd.read_csv(DATA_FILE, parse_dates=['Last Update'])
                .assign(day=lambda _df: _df['Last Update'].dt.date)
                .drop_duplicates(subset=['Country/Region', 'Province/State', 'day'])
-               [lambda df: df['day'] <= datetime.date(2020, 3, 10)]
+               [lambda df: df['day'] <= datetime.date(2020, 3, 20)]
               )
 
 countries = [{'label': c, 'value': c} for c in sorted(epidemie_df['Country/Region'].unique())]
@@ -72,12 +73,40 @@ app.layout = html.Div([
                 max=(epidemie_df['day'].max() - epidemie_df['day'].min()).days,
                 value=0,
                 #marks={i:str(date) for i, date in enumerate(epidemie_df['day'].unique())}
-                marks={i:str(i) for i, date in enumerate(epidemie_df['day'].unique())}
-            )  
+                marks={i:str(i) for i, date in enumerate(epidemie_df['day'].unique())}                
+                )   
         ]),
+        
+        dcc.Tab(label='Model', children=[
+            html.Div([
+                dcc.Dropdown(
+                    id='countrym',
+                    options=countries)
+            ]),
+            
+           html.Div([
+               dcc.Input(id='beta',placeholder='beta value', min=0, max=1,step=0.00001, debounce =True,
+                     type='number',style={'float': 'left'}) 
+               ]),
+            
+             html.Div([
+               dcc.Input(id='gamma',placeholder='gamma value', min=0, max=1,step=0.00001, debounce =True,
+                     type='number',style={'float': 'left'}) 
+               ]),
+            
+            html.Div([
+               dcc.Input(id='population',placeholder='population value', min=1000, debounce= True,
+                     type='number') ]),
+            
+             html.Div([
+                dcc.Graph(id='graphm')
+            ]),
+            
+            ]),
     ]),
 ])
-
+      
+    
 @app.callback(
     Output('graph1', 'figure'),
     [
@@ -159,6 +188,76 @@ def update_map(map_day):
         )
     }
 
+@app.callback(
+    Output('graphm', 'figure'),
+    [
+        Input('countrym', 'value'),
+        Input('beta', 'value'),
+        Input('gamma', 'value'), 
+        Input('population', 'value'),  
+    ]
+)
+
+def update_model(countrym, beta, gamma, population):
+    
+    print(countrym)
+    if countrym is None:
+        countrym = 'France'
+    else: countrym = countrym
+    country_df = (epidemie_df[epidemie_df['Country/Region'] == countrym]
+                      .groupby(['Country/Region', 'day'])
+                      .agg({'Confirmed': 'sum', 'Deaths': 'sum', 'Recovered': 'sum'})
+                      .reset_index()
+                     )
+
+    country_df['infected'] = country_df['Confirmed'].diff() 
+    infected_population = country_df.loc[2:]['infected']
+    nb_steps = len(infected_population)
+    
+    print(population)    
+    if population is None:
+        population = 66_190_000
+    else: population = population
+    print(beta)
+    if beta is None:
+        beta=0.001
+    else: beta = beta
+    print(gamma)
+    if gamma is None:
+        gamma=0.1
+    else: gamma = gamma
+        
+        
+    def SIR(t, y):
+        S = y[0]
+        I = y[1]
+        R = y[2]
+        return([-float(beta)*S*I, float(beta)*S*I-float(gamma)*I, float(gamma)*I])
+
+    solution = solve_ivp(SIR, [0, nb_steps], [population, 1,0], t_eval=np.arange(0, nb_steps, 1))
+    print(country_df)
+    
+    return {
+       'data': [
+            dict(
+                x=solution.t,
+                y=solution.y[0],
+                type='line',
+                name='Susceptible')] +
+        
+            ([dict(
+                x=solution.t,
+                y=solution.y[1],
+                type='line',
+                name='Infected')])+
+             
+              ([dict(
+                x=solution.t,
+                y=solution.y[2],
+                type='line',
+                name='Recovered')])
+        
+    }
 
 if __name__ == '__main__':
     app.run_server(debug=True)
